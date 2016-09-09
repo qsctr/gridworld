@@ -1,0 +1,8 @@
+resolver: lts-6.16
+packages:
+- '.'
+extra-deps:
+- gloss-1.10.2.3
+- gloss-rendering-1.10.3.3
+flags: {}
+extra-package-dbs: []
