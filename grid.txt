@@ -1,12 +1,13 @@
 xxxxxxxxxxxxxxxx
 x           xxxx
 x           xxxx
-x           xxxx
+x     o     xxxx
 x  xxxxxx      x
 x  xx  xx      x
-x  xx  xx      x
+x  xx  xx o    x
 x           xxxx
 x           xxxx
 x     xxx   xxxx
-x     xxx   xxxx
+x  $  xxx   xxxx
+xxxxxxxxxxxxxxxx
 xxxxxxxxxxxxxxxx
