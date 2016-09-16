@@ -23,10 +23,9 @@ type FeatureVector            = [Bool]
 type Location                 = Point
 type Action                   = Point
 type Locations                = S.Set Location
-type LocationsEditingFunction = Location -> Locations -> Locations
 type ErrorMessage             = String
 
-data Mode = Viewing | EditingWalls | EditingAgents | EditingTreasures deriving (Enum, Bounded)
+data Mode = Viewing | EditingWalls | EditingAgents | EditingTreasures deriving (Eq, Enum, Bounded)
 
 instance Show Mode where
     show Viewing          = "viewing mode"
@@ -49,17 +48,16 @@ data State = State
 main :: IO ()
 main = do
     mapM_ putStrLn
-        [ "=== GRIDWORLD ==="
-        , ""
-        , "Controls:"
+        [ "Controls:"
         , intercalate "\n" $ map (\m -> show (fromEnum m) ++ ": switch to " ++ show m)
             [minBound :: Mode .. maxBound :: Mode]
         , show Viewing ++ ":"
         , "    Pan around: drag mouse with left click, arrow keys"
         , "    Zoom in: drag mouse with right click, scroll up, page up key, '=' key"
         , "    Zoom out: drag mouse with right click, scroll down, page down key, '-' key"
-        , intercalate "\n" $ map (\m -> show m ++ ":\n    Add: left click or drag\n\
-            \    Remove: right click or drag") [EditingWalls, EditingAgents, EditingTreasures]
+        , "Editing modes:"
+        , "    Add: left click or drag"
+        , "    Remove: right click or drag"
         , ""
         , "Map instructions:"
         , "A text file can be parsed as a map with the following characters:"
@@ -72,24 +70,26 @@ main = do
     let getState = do
             putStrLn "Enter map file to read. If no map file is provided an empty map will be used."
             mapFile <- getLine
-            if all isSpace mapFile then return initialState else do
-                exists <- doesFileExist mapFile
-                if exists
-                    then do
-                        result <- parseMap <$> readFile mapFile
-                        case result of
-                            Left err -> do
-                                mapM_ putStrLn
-                                    [ "Parsing " ++ mapFile ++ " found the following errors:"
-                                    , err
-                                    , "Edit the file, then try again." ]
-                                getState
-                            Right state -> return $ fitWindow state
-                    else do
-                        putStrLn $ "File " ++ mapFile ++ " does not exist. Try again."
-                        getState
+            if all isSpace mapFile
+                then return initialState
+                else do
+                    exists <- doesFileExist mapFile
+                    if exists
+                        then do
+                            result <- parseMap <$> readFile mapFile
+                            case result of
+                                Left err -> do
+                                    mapM_ putStrLn
+                                        [ "Parsing " ++ mapFile ++ " found the following errors:"
+                                        , err
+                                        , "Edit the file, then try again." ]
+                                    getState
+                                Right state -> return $ fitWindow state
+                        else do
+                            putStrLn $ "File " ++ mapFile ++ " does not exist. Try again."
+                            getState
     state <- getState
-    play (InWindow "GridWorld" (windowW state, windowH state) (0, 0)) black 2 state draw handleEvent update
+    play (InWindow "GridWorld" (windowW state, windowH state) (0, 0)) black 30 state draw handleEvent update
 
 initialState :: State
 initialState = State
@@ -128,12 +128,6 @@ initialViewStateConfig =
     , (CBumpDown,
         [ (SpecialKey KeyUp,        Nothing) ]) ]
 
-updateLocationsForMode :: Mode -> (Locations -> Locations) -> State -> Maybe State
-updateLocationsForMode Viewing          _ _     = Nothing
-updateLocationsForMode EditingWalls     f state = Just (state { walls = f $ walls state })
-updateLocationsForMode EditingAgents    f state = Just (state { agents = f $ agents state })
-updateLocationsForMode EditingTreasures f state = Just (state { treasures = f $ treasures state })
-
 wallChar, agentChar, treasureChar, emptyChar :: Char
 wallChar     = 'x'
 agentChar    = 'o'
@@ -167,14 +161,17 @@ fitWindow :: State -> State
 fitWindow state@(State { walls, agents, treasures, viewState, windowW, windowH }) = state
     { viewState = viewState
         { viewStateViewPort = (viewStateViewPort viewState)
-            { viewPortScale     = min (fromIntegral windowW / mapWidth) (fromIntegral windowH / mapHeight)
-            , viewPortTranslate = ((-mapWidth + 1) / 2 , (mapHeight - 1) / 2) } } }
+            { viewPortScale = min (fromIntegral windowW / (xMax - xMin + 1))
+                (fromIntegral windowH / (yMax - yMin + 1))
+            , viewPortTranslate = (- (xMax + xMin) / 2 , - (yMax + yMin) / 2) } } }
     where
         everything = S.unions [walls, agents, treasures]
         xs         = S.map fst everything
         ys         = S.map snd everything
-        mapWidth   = S.findMax xs - S.findMin xs + 1
-        mapHeight  = S.findMax ys - S.findMin ys + 1
+        xMax       = S.findMax xs
+        xMin       = S.findMin xs
+        yMax       = S.findMax ys
+        yMin       = S.findMin ys
 
 sense :: SensorInput -> FeatureVector
 sense = map or . chunksOf 2
@@ -217,56 +214,46 @@ draw state = applyViewPortToPicture (viewStateViewPort $ viewState state) $ pict
         drawTreasure (x, y) = color orange $ translate x y $ rectangleSolid 1 1
 
 handleEvent :: Event -> State -> State
-
-handleEvent (EventKey (SpecialKey KeySpace) Down _ _) state@(State { playing }) =
-    state { playing = not playing }
-
-handleEvent (EventKey (Char 'f') Down _ _) state = fitWindow state
-
-handleEvent (EventKey (Char c) Down _ _) state
-    | Just n <- readMaybe [c]
+handleEvent (EventKey key Down _ _) state@(State { playing })
+    | key == SpecialKey KeySpace = state { playing = not playing }
+    | key == Char 'f'            = fitWindow state
+    | Char c <- key
+    , Just n <- readMaybe [c]
     , n >= fromEnum (minBound :: Mode)
     , n <= fromEnum (maxBound :: Mode) = state { mode = toEnum n }
-
 handleEvent event@(EventKey key _ _ _) state@(State { viewState, mode = Viewing })
     | key `elem` (map fst $ concat $ map snd $ initialViewStateConfig) =
         state { viewState = updateViewStateWithEvent event viewState }
-
 handleEvent event@(EventMotion _) state@(State { viewState =
     viewState@(ViewState { viewStateTranslateMark, viewStateScaleMark }), mode = Viewing })
         | isJust viewStateTranslateMark || isJust viewStateScaleMark =
             state { viewState = updateViewStateWithEvent event viewState }
-
-handleEvent (EventKey (MouseButton LeftButton) Up _ _) state = state { leftButton = False }
-
-handleEvent (EventKey (MouseButton RightButton) Up _ _) state = state { rightButton = False }
-
-handleEvent (EventKey (MouseButton button) Down _ pos) state
-    | Just function <- functionForButton button =
-        let state' = fromJust $ editLocations function state pos
-        in  case button of
-                LeftButton  -> state' { leftButton = True }
-                RightButton -> state' { rightButton = True }
-                _           -> state'
-
+handleEvent (EventKey (MouseButton button) Up _ _) state
+    | button == LeftButton = state { leftButton = False }
+    | button == RightButton = state { rightButton = False }
+handleEvent (EventKey (MouseButton button) Down _ pos) state = editLocations button pos state
 handleEvent (EventMotion pos) state@(State { leftButton, rightButton })
-    | leftButton && not rightButton = fromJust $
-        editLocations (fromJust $ functionForButton LeftButton) state pos
-    | rightButton && not leftButton = fromJust $
-        editLocations (fromJust $ functionForButton RightButton) state pos
-    | otherwise                     = state
-
+    | leftButton && not rightButton = editLocations LeftButton pos state
+    | rightButton && not leftButton = editLocations RightButton pos state
 handleEvent (EventResize (w, h)) state = state { windowW = w, windowH = h }
-
 handleEvent _ state = state
 
-editLocations :: LocationsEditingFunction -> State -> Point -> Maybe State
-editLocations function state@(State { mode, viewState }) pos = updateLocationsForMode mode
-    (function (fromIntegral $ round x, fromIntegral $ round y)) state
+editLocations :: MouseButton -> Point -> State -> State
+editLocations button pos state@(State { viewState }) =
+    editLocations' button (fromIntegral $ round x, fromIntegral $ round y) state
     where
         (x, y) = invertViewPort (viewStateViewPort viewState) pos
 
-functionForButton :: MouseButton -> Maybe LocationsEditingFunction
-functionForButton LeftButton  = Just S.insert
-functionForButton RightButton = Just S.delete
-functionForButton _           = Nothing
+editLocations' :: MouseButton -> Location -> State -> State
+editLocations' LeftButton loc state@(State { mode, walls, agents, treasures })
+    | mode == EditingWalls, S.notMember loc agents, S.notMember loc treasures =
+        state { walls = S.insert loc walls }
+    | mode == EditingAgents, S.notMember loc walls =
+        state { agents = S.insert loc agents }
+    | mode == EditingTreasures, S.notMember loc walls =
+        state { treasures = S.insert loc treasures }
+editLocations' RightButton loc state@(State { mode, walls, agents, treasures })
+    | mode == EditingWalls     = state { walls = S.delete loc walls }
+    | mode == EditingAgents    = state { agents = S.delete loc agents }
+    | mode == EditingTreasures = state { treasures = S.delete loc treasures }
+editLocations' _ _ state = state

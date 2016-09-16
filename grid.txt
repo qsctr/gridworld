@@ -10,4 +10,3 @@ x           xxxx
 x     xxx   xxxx
 x  $  xxx   xxxx
 xxxxxxxxxxxxxxxx
-xxxxxxxxxxxxxxxx
