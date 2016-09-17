@@ -88,8 +88,20 @@ main = do
                         else do
                             putStrLn $ "File " ++ mapFile ++ " does not exist. Try again."
                             getState
+        getFps = do
+            putStrLn "Enter frames per second"
+            fps <- readMaybe <$> getLine
+            let doAgain = do
+                    putStrLn "Frames per second must be between 0 (exclusive) and 60 (inclusive)"
+                    getFps
+            case fps of
+                Just n -> if n > 0 && n <= 60
+                    then return n
+                    else doAgain
+                Nothing -> doAgain
     state <- getState
-    play (InWindow "GridWorld" (windowW state, windowH state) (0, 0)) black 30 state draw handleEvent update
+    fps <- getFps
+    play (InWindow "GridWorld" (windowW state, windowH state) (0, 0)) black fps state draw handleEvent update
 
 initialState :: State
 initialState = State
@@ -231,7 +243,11 @@ handleEvent event@(EventMotion _) state@(State { viewState =
 handleEvent (EventKey (MouseButton button) Up _ _) state
     | button == LeftButton = state { leftButton = False }
     | button == RightButton = state { rightButton = False }
-handleEvent (EventKey (MouseButton button) Down _ pos) state = editLocations button pos state
+handleEvent (EventKey (MouseButton button) Down _ pos) state
+    | button == LeftButton = state' { leftButton = True }
+    | button == RightButton = state' { rightButton = True }
+    where
+        state' = editLocations button pos state
 handleEvent (EventMotion pos) state@(State { leftButton, rightButton })
     | leftButton && not rightButton = editLocations LeftButton pos state
     | rightButton && not leftButton = editLocations RightButton pos state
