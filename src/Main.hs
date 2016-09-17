@@ -11,7 +11,7 @@ import qualified Data.Set as S
 
 import Graphics.Gloss.Data.ViewPort
 import Graphics.Gloss.Data.ViewState
-import Graphics.Gloss.Interface.Pure.Game
+import Graphics.Gloss.Interface.IO.Game
 
 import System.Directory
 import System.Process
@@ -47,26 +47,8 @@ data State = State
 
 main :: IO ()
 main = do
-    mapM_ putStrLn
-        [ "Controls:"
-        , intercalate "\n" $ map (\m -> show (fromEnum m) ++ ": switch to " ++ show m)
-            [minBound :: Mode .. maxBound :: Mode]
-        , show Viewing ++ ":"
-        , "    Pan around: drag mouse with left click, arrow keys"
-        , "    Zoom in: drag mouse with right click, scroll up, page up key, '=' key"
-        , "    Zoom out: drag mouse with right click, scroll down, page down key, '-' key"
-        , "Editing modes:"
-        , "    Add: left click or drag"
-        , "    Remove: right click or drag"
-        , ""
-        , "Map instructions:"
-        , "A text file can be parsed as a map with the following characters:"
-        , "    Wall: " ++ show wallChar
-        , "    Agent: " ++ show agentChar
-        , "    Treasure: " ++ show treasureChar
-        , "    Empty square: " ++ show emptyChar
-        , "The lines do not have to be the same length."
-        , "" ]
+    putStrLn controlsInstructions
+    putStrLn mapInstructions  
     let getState = do
             putStrLn "Enter map file to read. If no map file is provided an empty map will be used."
             mapFile <- getLine
@@ -101,7 +83,8 @@ main = do
                 Nothing -> doAgain
     state <- getState
     fps <- getFps
-    play (InWindow "GridWorld" (windowW state, windowH state) (0, 0)) black fps state draw handleEvent update
+    _ <- updateConsole state
+    playIO (InWindow "GridWorld" (windowW state, windowH state) (200, 200)) black fps state draw handleEvent update
 
 initialState :: State
 initialState = State
@@ -139,6 +122,27 @@ initialViewStateConfig =
         [ (SpecialKey KeyDown,      Nothing) ])
     , (CBumpDown,
         [ (SpecialKey KeyUp,        Nothing) ]) ]
+
+controlsInstructions, mapInstructions :: String
+controlsInstructions = unlines
+    [ "Controls:"
+    , intercalate "\n" $ map (\m -> show (fromEnum m) ++ ": switch to " ++ show m)
+        [minBound :: Mode .. maxBound :: Mode]
+    , show Viewing ++ ":"
+    , "    Pan around: drag mouse with left click, arrow keys"
+    , "    Zoom in: drag mouse with right click, scroll up, page up key, '=' key"
+    , "    Zoom out: drag mouse with right click, scroll down, page down key, '-' key"
+    , "Editing modes:"
+    , "    Add: left click or drag"
+    , "    Remove: right click or drag" ]
+mapInstructions = unlines
+    [ "Map instructions:"
+    , "A text file can be parsed as a map with the following characters:"
+    , "    Wall: " ++ show wallChar
+    , "    Agent: " ++ show agentChar
+    , "    Treasure: " ++ show treasureChar
+    , "    Empty square: " ++ show emptyChar
+    , "The lines do not have to be the same length." ]
 
 wallChar, agentChar, treasureChar, emptyChar :: Char
 wallChar     = 'x'
@@ -198,25 +202,25 @@ decide _                        = (0, 1)  -- north
 act :: Location -> Action -> Location
 act (x, y) (a, b) = (x + a, y + b)
 
-update :: Float -> State -> State
+update :: Float -> State -> IO State
 update _ state
-    | not (playing state) = state
-    | otherwise           = state { agents = S.map updateAgent $ agents state }
+    | not (playing state) = return state
+    | otherwise           = return (state { agents = S.map updateAgent $ agents state })
     where
         updateAgent (x, y)
             | S.member (x, y) (treasures state) = (x, y)
             | otherwise = act (x, y) $ decide $ sense $ map (`S.member` (walls state))
-                [ (x, y + 1)
-                , (x + 1, y + 1)
-                , (x + 1, y)
-                , (x + 1, y - 1)
-                , (x, y - 1)
-                , (x - 1, y - 1)
-                , (x - 1, y)
-                , (x - 1, y + 1) ]
+                [ (x, y + 1)       -- N
+                , (x + 1, y + 1)   -- NE
+                , (x + 1, y)       -- E
+                , (x + 1, y - 1)   -- SE
+                , (x, y - 1)       -- S
+                , (x - 1, y - 1)   -- SW
+                , (x - 1, y)       -- W
+                , (x - 1, y + 1) ] -- NW
 
-draw :: State -> Picture
-draw state = applyViewPortToPicture (viewStateViewPort $ viewState state) $ pictures $
+draw :: State -> IO Picture
+draw state = return $ applyViewPortToPicture (viewStateViewPort $ viewState state) $ pictures $
     map drawTreasure (S.toList $ treasures state) ++
     map drawAgent (S.toList $ agents state) ++
     map drawWall (S.toList $ walls state)
@@ -225,34 +229,46 @@ draw state = applyViewPortToPicture (viewStateViewPort $ viewState state) $ pict
         drawAgent (x, y)    = color blue   $ translate x y $ circleSolid 0.5
         drawTreasure (x, y) = color orange $ translate x y $ rectangleSolid 1 1
 
-handleEvent :: Event -> State -> State
+handleEvent :: Event -> State -> IO State
+handleEvent event@(EventKey key _ _ _) state
+    | isInViewStateConfig key && (not $ isMouseButton key) = return $ updateViewStateWithEvent' event state
 handleEvent (EventKey key Down _ _) state@(State { playing })
-    | key == SpecialKey KeySpace = state { playing = not playing }
-    | key == Char 'f'            = fitWindow state
+    | key == SpecialKey KeySpace = updateConsole (state { playing = not playing })
+    | key == Char 'f'            = return $ fitWindow state
     | Char c <- key
     , Just n <- readMaybe [c]
     , n >= fromEnum (minBound :: Mode)
-    , n <= fromEnum (maxBound :: Mode) = state { mode = toEnum n }
-handleEvent event@(EventKey key _ _ _) state@(State { viewState, mode = Viewing })
-    | key `elem` (map fst $ concat $ map snd $ initialViewStateConfig) =
-        state { viewState = updateViewStateWithEvent event viewState }
+    , n <= fromEnum (maxBound :: Mode) = updateConsole (state { mode = toEnum n })
+handleEvent event@(EventKey key@(MouseButton _) _ _ _) state@(State { mode = Viewing })
+    | isInViewStateConfig key = return $ updateViewStateWithEvent' event state
 handleEvent event@(EventMotion _) state@(State { viewState =
-    viewState@(ViewState { viewStateTranslateMark, viewStateScaleMark }), mode = Viewing })
+    ViewState { viewStateTranslateMark, viewStateScaleMark }, mode = Viewing })
         | isJust viewStateTranslateMark || isJust viewStateScaleMark =
-            state { viewState = updateViewStateWithEvent event viewState }
+            return $ updateViewStateWithEvent' event state
 handleEvent (EventKey (MouseButton button) Up _ _) state
-    | button == LeftButton = state { leftButton = False }
-    | button == RightButton = state { rightButton = False }
+    | button == LeftButton = return (state { leftButton = False })
+    | button == RightButton = return (state { rightButton = False })
 handleEvent (EventKey (MouseButton button) Down _ pos) state
-    | button == LeftButton = state' { leftButton = True }
-    | button == RightButton = state' { rightButton = True }
+    | button == LeftButton = return (state' { leftButton = True })
+    | button == RightButton = return (state' { rightButton = True })
     where
         state' = editLocations button pos state
 handleEvent (EventMotion pos) state@(State { leftButton, rightButton })
-    | leftButton && not rightButton = editLocations LeftButton pos state
-    | rightButton && not leftButton = editLocations RightButton pos state
-handleEvent (EventResize (w, h)) state = state { windowW = w, windowH = h }
-handleEvent _ state = state
+    | leftButton && not rightButton = return $ editLocations LeftButton pos state
+    | rightButton && not leftButton = return $ editLocations RightButton pos state
+handleEvent (EventResize (w, h)) state = return (state { windowW = w, windowH = h })
+handleEvent _ state = return state
+
+isInViewStateConfig :: Key -> Bool
+isInViewStateConfig = (`elem` (map fst $ concat $ map snd $ initialViewStateConfig))
+
+isMouseButton :: Key -> Bool
+isMouseButton (MouseButton _) = True
+isMouseButton _               = False
+
+updateViewStateWithEvent' :: Event -> State -> State
+updateViewStateWithEvent' event state@(State { viewState }) =
+    state { viewState = updateViewStateWithEvent event viewState }
 
 editLocations :: MouseButton -> Point -> State -> State
 editLocations button pos state@(State { viewState }) =
@@ -273,3 +289,13 @@ editLocations' RightButton loc state@(State { mode, walls, agents, treasures })
     | mode == EditingAgents    = state { agents = S.delete loc agents }
     | mode == EditingTreasures = state { treasures = S.delete loc treasures }
 editLocations' _ _ state = state
+
+updateConsole :: State -> IO State
+updateConsole state@(State { playing, mode }) = do
+    callCommand "cls" -- only works on Windows
+    putStrLn controlsInstructions
+    if playing
+        then putStrLn "Playing"
+        else putStrLn "Paused"
+    putStrLn $ "Mode: " ++ show mode
+    return state
