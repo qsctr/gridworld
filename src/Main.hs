@@ -133,8 +133,9 @@ initialViewStateConfig =
 controlsInstructions, mapInstructions :: String
 controlsInstructions = unlines
     [ "Controls:"
-    , "Space bar: play"
-    , "'f': fit world to window"
+    , "Space bar: play/pause"
+    , "f: fit world to window"
+    , "ctrl+s: save to file"
     , intercalate "\n" $ map (\ m -> show (fromEnum m) ++ ": switch to " ++ show m)
         [minBound :: Mode .. maxBound :: Mode]
     , "all modes:"
@@ -144,8 +145,10 @@ controlsInstructions = unlines
     , "    Pan around: drag mouse with left click, arrow keys"
     , "    Zoom in/out: drag mouse with right click, scroll up/down, page up/down key, '='/'-' key"
     , "editing modes:"
-    , "    Add: left click or drag"
-    , "    Remove: right click or drag" ]
+    , "    Add object: left click or drag"
+    , "    Remove object: right click or drag"
+    , "    Pan around: drag mouse with left click holding shift"
+    , "    Zoom in/out: drag mouse with right click holding shift" ]
 mapInstructions = unlines
     [ "Map instructions:"
     , "A text file can be parsed as a map with the following characters:"
@@ -259,20 +262,21 @@ handleEvent event@(EventKey key _ _ _) state
 handleEvent (EventKey key Down _ _) state@(State { playing })
     | key == SpecialKey KeySpace = updateConsole (state { playing = not playing })
     | key == Char 'f'            = return $ fitWindow state
-    | key == Char '\DC3'         = saveToFile state
+    | key == Char '\DC3'         = saveToFile state -- it's a bug, it's actually ctrl+s not \DC3
     | Char c <- key
     , Just n <- readMaybe [c]
     , n >= fromEnum (minBound :: Mode)
     , n <= fromEnum (maxBound :: Mode) = updateConsole (state { mode = toEnum n })
-handleEvent event@(EventKey key@(MouseButton _) _ _ _) state@(State { mode = Viewing })
-    | isInViewStateConfig key = return $ updateViewStateWithEvent' event state
+handleEvent event@(EventKey key@(MouseButton _) _ (Modifiers { shift }) _) state@(State { mode })
+    | isInViewStateConfig key, mode == Viewing || shift == Down =
+        return $ updateViewStateWithEvent' event state
 handleEvent event@(EventMotion _) state@(State { viewState =
-    ViewState { viewStateTranslateMark, viewStateScaleMark }, mode = Viewing })
+    ViewState { viewStateTranslateMark, viewStateScaleMark } })
         | isJust viewStateTranslateMark || isJust viewStateScaleMark =
             return $ updateViewStateWithEvent' event state
-handleEvent (EventKey (MouseButton button) Up _ _) state
-    | button == LeftButton = return (state { leftButton = False })
-    | button == RightButton = return (state { rightButton = False })
+handleEvent event@(EventKey (MouseButton button) Up _ _) state
+    | button == LeftButton = return $ updateViewStateWithEvent' event (state { leftButton = False })
+    | button == RightButton = return $ updateViewStateWithEvent' event (state { rightButton = False })
 handleEvent (EventKey (MouseButton button) Down _ pos) state
     | button == LeftButton = return (state' { leftButton = True })
     | button == RightButton = return (state' { rightButton = True })
