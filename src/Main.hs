@@ -18,12 +18,12 @@ import System.Process
 
 import Text.Read (readMaybe)
 
-type SensorInput              = [Bool]
-type FeatureVector            = [Bool]
-type Location                 = Point
-type Action                   = Point
-type Locations                = S.Set Location
-type ErrorMessage             = String
+type SensorInput   = [Bool]
+type FeatureVector = [Bool]
+type Location      = (Int, Int)
+type Action        = (Int, Int)
+type Locations     = S.Set Location
+type ErrorMessage  = String
 
 data Mode = Viewing | EditingWalls | EditingAgents | EditingTreasures deriving (Eq, Enum, Bounded)
 
@@ -48,12 +48,17 @@ data State = State
 main :: IO ()
 main = do
     putStrLn controlsInstructions
-    putStrLn mapInstructions  
+    putStrLn "These instructions will be visible while the simulation is running."
+    putStrLn "Press enter to continue."
+    _ <- getLine
+    putStrLn mapInstructions
     let getState = do
             putStrLn "Enter map file to read. If no map file is provided an empty map will be used."
             mapFile <- getLine
             if all isSpace mapFile
-                then return initialState
+                then do
+                    putStrLn "Using empty map."
+                    return initialState
                 else do
                     exists <- doesFileExist mapFile
                     if exists
@@ -66,7 +71,9 @@ main = do
                                         , err
                                         , "Edit the file, then try again." ]
                                     getState
-                                Right state -> return $ fitWindow state
+                                Right state -> do
+                                    putStrLn $ "using map from file " ++ mapFile
+                                    return $ fitWindow state
                         else do
                             putStrLn $ "File " ++ mapFile ++ " does not exist. Try again."
                             getState
@@ -84,7 +91,7 @@ main = do
     state <- getState
     fps <- getFps
     _ <- updateConsole state
-    playIO (InWindow "GridWorld" (windowW state, windowH state) (200, 200)) black fps state draw handleEvent update
+    playIO (InWindow "GridWorld" (windowW state, windowH state) (500, 0)) black fps state draw handleEvent update
 
 initialState :: State
 initialState = State
@@ -126,13 +133,17 @@ initialViewStateConfig =
 controlsInstructions, mapInstructions :: String
 controlsInstructions = unlines
     [ "Controls:"
-    , intercalate "\n" $ map (\m -> show (fromEnum m) ++ ": switch to " ++ show m)
+    , "Space bar: play"
+    , "'f': fit world to window"
+    , intercalate "\n" $ map (\ m -> show (fromEnum m) ++ ": switch to " ++ show m)
         [minBound :: Mode .. maxBound :: Mode]
+    , "all modes:"
+    , "    Pan around: arrow keys"
+    , "    Zoom in/out: scroll up/down, page up/down key, '='/'-' key"
     , show Viewing ++ ":"
     , "    Pan around: drag mouse with left click, arrow keys"
-    , "    Zoom in: drag mouse with right click, scroll up, page up key, '=' key"
-    , "    Zoom out: drag mouse with right click, scroll down, page down key, '-' key"
-    , "Editing modes:"
+    , "    Zoom in/out: drag mouse with right click, scroll up/down, page up/down key, '='/'-' key"
+    , "editing modes:"
     , "    Add: left click or drag"
     , "    Remove: right click or drag" ]
 mapInstructions = unlines
@@ -154,14 +165,14 @@ parseMap :: String -> Either ErrorMessage State
 parseMap = fmap toState . combine . map (foldr add start . pair) . zip [0, -1 ..] . lines
     where
         start = Right (S.empty, S.empty, S.empty)
-        pair (y, xs) = map (\x -> ((fromIntegral x, y), xs !! x)) [0 .. length xs - 1]
+        pair (y, xs) = map (\ x -> ((x, y), xs !! x)) [0 .. length xs - 1]
         add ((x, y), c) (Right (wls, ags, trs))
             | toLower c == wallChar     = Right (S.insert (x, y) wls, ags, trs)
             | toLower c == agentChar    = Right (wls, S.insert (x, y) ags, trs)
             | toLower c == treasureChar = Right (wls, ags, S.insert (x, y) trs)
             | toLower c == emptyChar    = Right (wls, ags, trs)
-            | otherwise                 = Left $ "Illegal character '" ++ [c]
-                ++ "' at line " ++ show (round (-y + 1)) ++ ", col " ++ show (round (x + 1))
+            | otherwise                 = Left $
+                "Illegal character '" ++ [c] ++ "' at line " ++ show (-y + 1) ++ ", col " ++ show (x + 1)
         add a (Left msg)
             | Left newMsg <- add a start = Left $ msg ++ "\n" ++ newMsg
             | otherwise                  = Left msg
@@ -173,21 +184,33 @@ parseMap = fmap toState . combine . map (foldr add start . pair) . zip [0, -1 ..
             , agents    = S.unions ags
             , treasures = S.unions trs }
 
+convertToText :: State -> String
+convertToText state@(State { walls, agents, treasures }) = unlines $ S.foldr (add treasureChar)
+    (S.foldr (add agentChar) (S.foldr (add wallChar) emptyGrid walls) agents) treasures
+    where
+        add c = \ (x, y) acc ->
+            let accx = acc !! (yMax - y)
+            in  take (yMax - y) acc ++ [take (x - xMin) accx ++ [c] ++ drop (x - xMin + 1) accx]
+                ++ drop (yMax - y + 1) acc
+        emptyGrid = replicate (yMax - yMin + 1) $ replicate (xMax - xMin + 1) emptyChar
+        ((xMax, xMin), (yMax, yMin)) = maxMins state
+
 fitWindow :: State -> State
-fitWindow state@(State { walls, agents, treasures, viewState, windowW, windowH }) = state
+fitWindow state@(State { viewState, windowW, windowH }) = state
     { viewState = viewState
         { viewStateViewPort = (viewStateViewPort viewState)
-            { viewPortScale = min (fromIntegral windowW / (xMax - xMin + 1))
-                (fromIntegral windowH / (yMax - yMin + 1))
-            , viewPortTranslate = (- (xMax + xMin) / 2 , - (yMax + yMin) / 2) } } }
+            { viewPortScale = min (fromIntegral windowW / fromIntegral (xMax - xMin + 1))
+                (fromIntegral windowH / fromIntegral (yMax - yMin + 1))
+            , viewPortTranslate = (fromIntegral (-(xMax + xMin)) / 2 , fromIntegral (-(yMax + yMin)) / 2) } } }
+    where
+        ((xMax, xMin), (yMax, yMin)) = maxMins state
+
+maxMins :: State -> ((Int, Int), (Int, Int))
+maxMins (State { walls, agents, treasures }) = ((S.findMax xs, S.findMin xs), (S.findMax ys, S.findMin ys))
     where
         everything = S.unions [walls, agents, treasures]
-        xs         = S.map fst everything
-        ys         = S.map snd everything
-        xMax       = S.findMax xs
-        xMin       = S.findMin xs
-        yMax       = S.findMax ys
-        yMin       = S.findMin ys
+        xs         = S.map fst $ everything
+        ys         = S.map snd $ everything
 
 sense :: SensorInput -> FeatureVector
 sense = map or . chunksOf 2
@@ -225,9 +248,10 @@ draw state = return $ applyViewPortToPicture (viewStateViewPort $ viewState stat
     map drawAgent (S.toList $ agents state) ++
     map drawWall (S.toList $ walls state)
     where
-        drawWall (x, y)     = color white  $ translate x y $ rectangleSolid 1 1
-        drawAgent (x, y)    = color blue   $ translate x y $ circleSolid 0.5
-        drawTreasure (x, y) = color orange $ translate x y $ rectangleSolid 1 1
+        drawWall     loc = color white  $ translate' loc $ rectangleSolid 1 1
+        drawAgent    loc = color blue   $ translate' loc $ circleSolid 0.5
+        drawTreasure loc = color orange $ translate' loc $ rectangleSolid 1 1
+        translate' (x, y) = translate (fromIntegral x) (fromIntegral y)
 
 handleEvent :: Event -> State -> IO State
 handleEvent event@(EventKey key _ _ _) state
@@ -235,6 +259,7 @@ handleEvent event@(EventKey key _ _ _) state
 handleEvent (EventKey key Down _ _) state@(State { playing })
     | key == SpecialKey KeySpace = updateConsole (state { playing = not playing })
     | key == Char 'f'            = return $ fitWindow state
+    | key == Char '\DC3'         = saveToFile state
     | Char c <- key
     , Just n <- readMaybe [c]
     , n >= fromEnum (minBound :: Mode)
@@ -272,7 +297,7 @@ updateViewStateWithEvent' event state@(State { viewState }) =
 
 editLocations :: MouseButton -> Point -> State -> State
 editLocations button pos state@(State { viewState }) =
-    editLocations' button (fromIntegral $ round x, fromIntegral $ round y) state
+    editLocations' button (round x, round y) state
     where
         (x, y) = invertViewPort (viewStateViewPort viewState) pos
 
@@ -298,4 +323,17 @@ updateConsole state@(State { playing, mode }) = do
         then putStrLn "Playing"
         else putStrLn "Paused"
     putStrLn $ "Mode: " ++ show mode
+    return state
+
+saveToFile :: State -> IO State
+saveToFile state = do
+    putStrLn ""
+    putStrLn "Enter the file to save to:"
+    file <- getLine
+    putStrLn "Saving to file..."
+    putStrLn "This might take a long time if an agent has gone far away from the rest of the map"
+    writeFile file $ convertToText state
+    _ <- updateConsole state
+    putStrLn ""
+    putStrLn "Done saving to file."
     return state
